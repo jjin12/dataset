@@ -15,7 +15,7 @@ class cityscapes(Dataset):
         self.image_filenames = [os.path.join(dp, f) for dp, dn, fn in os.walk(os.path.expanduser(self.images_root)) for f in fn]
         self.image_filenames.sort()
        
-        self.label_filenames = [os.path.join(dp, f) for dp, dn, fn in os.walk(os.path.expanduser(self.labels_root)) for f in fn if         f.endswith("_labelTrainIds.png")]
+        self.label_filenames = [os.path.join(dp, f) for dp, dn, fn in os.walk(os.path.expanduser(self.labels_root)) for f in fn if f.endswith("_labelTrainIds.png")]
         self.label_filenames.sort()
         
         self.transform = transform
