@@ -25,7 +25,8 @@ class cityscapes(Dataset):
         image.show()
         label = Image.open(self.label_filenames[idx])
         if self.transform is not None:
-            image, label = self.transform(image, label)  
+            image = self.transform(image)  
+            label = self.transform(label)   
         return image, label
     def __len__(self):
         return len(self.image_filenames)
