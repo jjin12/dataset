@@ -18,7 +18,7 @@ class CrossEntropyLoss2d(torch.nn.Module):
 
     def forward(self, outputs, targets):
         return self.loss(torch.nn.functional.log_softmax(outputs, dim=1), targets)
-
+    
 def main():
     transform = myTransform.Compose([myTransform.Resize(512, Image.BILINEAR), myTransform.ToTensor()])
     root = "/home/jjin/adl/cityscapes_dataset"
@@ -49,9 +49,7 @@ def main():
     weight[16] = 10.289801597595
     weight[17] = 10.405355453491
     weight[18] = 10.138095855713
-
     weight[19] = 0
-    
     weight = weight.cuda()
     
     criterion = CrossEntropyLoss2d(weight)
@@ -73,6 +71,18 @@ def main():
     val_loss_meter = averageMeter()
     time_meter = averageMeter()
     
+    def weights_init(m):
+        classname = m.__class__.__name__
+        if classname.find('Conv') != -1:
+            #m.weight.data.normal_(0.0, 0.02)
+            n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+            m.weight.data.normal_(0, math.sqrt(2. / n))
+        elif classname.find('BatchNorm') != -1:
+            #m.weight.data.normal_(1.0, 0.02)
+            m.weight.data.fill_(1)
+            m.bias.data.fill_(0)
+
+    model.apply(weights_init)   
     for epoch in range(start_epoch, 3):
         model.train()
         for step, (images, labels) in enumerate(loader_train):
@@ -105,11 +115,9 @@ def main():
 
                 loss_val = criterion(outputs_val, targets_val[:, 0])
               #  time_val.append(time.time() - start_time)
-
-
+            
                 pred = outputs_val.data.max(1)[1].cpu().numpy()
                 gt = labels_val.data.cpu().numpy()
-
 
                 running_metrics_val.update(gt, pred)
                 val_loss_meter.update(loss_val.item())
