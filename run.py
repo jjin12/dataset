@@ -100,7 +100,7 @@ def main():
             iteration = iteration + 1
             print('Epoch {} [{}/{}] Train_loss:{}'.format(epoch, step, len(loader_train), loss.data[0])) # loss.item() = loss.data[0]
             writer.add_scalar('loss/train_loss', loss.data[0], iteration)
-             
+        torch.save(model.state_dict(), '{}_{}.pth'.format(os.path.join("/home/jjin/adl/myImplementation/datasets/save","model"),str(epoch)))     
         
         model.eval()
         with torch.no_grad():
