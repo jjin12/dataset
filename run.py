@@ -1,13 +1,53 @@
 import torch
 from datasets import cityscapes
+from PIL import Image, ImageOps
 import torchvision.transforms as myTransform
 from torch.utils.data import Dataset, DataLoader
+from torchvision.transforms import Compose, CenterCrop, Normalize, Resize, Pad
+from torchvision.transforms import ToTensor, ToPILImage
 from erfnet import Net
 from torch.optim import SGD, Adam
 from PIL import Image
 from torch.autograd import Variable
 from tensorboardX import SummaryWriter 
-from metrics import runningScore, averageMeter
+from utils import evaluate_segmentation
+import math
+import os
+import random
+from transform import ToLabel, Relabel
+
+class MyCoTransform(object):
+    def __init__(self, augment=True, height=512):
+        self.augment = augment
+        self.height = height
+        pass
+    def __call__(self, input, target):
+        # do something to both images
+        input =  Resize(self.height, Image.BILINEAR)(input)
+        target = Resize(self.height, Image.NEAREST)(target)
+
+        # if(self.augment):
+        #     Random hflip
+        #     hflip = random.random()
+        #     if (hflip < 0.5):
+        #         input = input.transpose(Image.FLIP_LEFT_RIGHT)
+        #         target = target.transpose(Image.FLIP_LEFT_RIGHT)
+            
+        #     Random translation 0-2 pixels (fill rest with padding
+        #     transX = random.randint(-2, 2) 
+        #     transY = random.randint(-2, 2)
+
+        #     input = ImageOps.expand(input, border=(transX,transY,0,0), fill=0)
+        #     target = ImageOps.expand(target, border=(transX,transY,0,0), fill=255) #pad label filling with 255
+        #     input = input.crop((0, 0, input.size[0]-transX, input.size[1]-transY))
+        #     target = target.crop((0, 0, target.size[0]-transX, target.size[1]-transY))   
+
+        input = ToTensor()(input)
+        target = ToLabel()(target)
+        target = Relabel(255, 19)(target)
+
+        return input, target
+
 
 class CrossEntropyLoss2d(torch.nn.Module):
 
@@ -20,13 +60,15 @@ class CrossEntropyLoss2d(torch.nn.Module):
         return self.loss(torch.nn.functional.log_softmax(outputs, dim=1), targets)
     
 def main():
-    transform = myTransform.Compose([myTransform.Resize(512, Image.BILINEAR), myTransform.ToTensor()])
+    # transform = myTransform.Compose([myTransform.Resize(512, Image.BILINEAR), myTransform.ToTensor()])
+    co_transform = MyCoTransform(augment=True)#1024)
+    co_transform_val = MyCoTransform(augment=False)#1024)
     root = "/home/jjin/adl/cityscapes_dataset"
-    dataset_train = cityscapes(root, transform)
+    dataset_train = cityscapes(root, co_transform)
     loader_train = DataLoader(dataset_train, batch_size=4, shuffle=True,num_workers=4)
     
-    dataset_val = cityscapes(root, transform, subset='val')
-    loader_val = DataLoader(dataset_val, batch_size=4, shuffle=False,num_workers=4)
+    dataset_val = cityscapes(root, co_transform_val, subset='val')
+    loader_val = DataLoader(dataset_val, batch_size=1, shuffle=False,num_workers=4)
     
     NUM_CLASSES = 20
     weight = torch.ones(NUM_CLASSES)
@@ -56,52 +98,49 @@ def main():
     print(type(criterion))
     model = Net(NUM_CLASSES).cuda()
     
-    optimizer = Adam(model.parameters(), 5e-4, (0.9, 0.999),  eps=1e-08, weight_decay=1e-4)      ## scheduler 2
+    # print(model)
+
+    optimizer = Adam(model.parameters(), 0.001, (0.9, 0.999),  eps=1e-08, weight_decay=1e-4)      ## scheduler 2
     
     savedir = '/home/jjin/adl/myImplementation/datasets/save'
     automated_log_path = savedir + "/automated_log_encoder.txt"
     modeltxtpath = savedir + "/model_encoder.txt"
     
-    writer = SummaryWriter('/home/jjin/adl/myImplementation/datasets/runs')
     start_epoch = 1
     iteration = 1
+       
+    def load_my_state_dict(model, state_dict):  #custom function to load model when not all dict elements
+        own_state = model.state_dict()
+        for name, param in state_dict.items():
+            if name not in own_state:
+                    continue
+            own_state[name].copy_(param)
+        return model
+    weightspath = '/home/jjin/adl/myImplementation/datasets/trained_models/erfnet_pretrained.pth'
     
-    # Setup Metrics
-    running_metrics_val = runningScore(NUM_CLASSES)
-    val_loss_meter = averageMeter()
-    time_meter = averageMeter()
-    
-    def weights_init(m):
-        classname = m.__class__.__name__
-        if classname.find('Conv') != -1:
-            #m.weight.data.normal_(0.0, 0.02)
-            n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-            m.weight.data.normal_(0, math.sqrt(2. / n))
-        elif classname.find('BatchNorm') != -1:
-            #m.weight.data.normal_(1.0, 0.02)
-            m.weight.data.fill_(1)
-            m.bias.data.fill_(0)
-
-    model.apply(weights_init)   
-    for epoch in range(start_epoch, 3):
-        model.train()
-        for step, (images, labels) in enumerate(loader_train):
-            images = images.cuda()
-            labels = labels.cuda()
+    for epoch in range(start_epoch, 10):
+        # model.train()
+        # for step, (images, labels) in enumerate(loader_train):
+        #     images = images.cuda()
+        #     labels = labels.cuda()
             
-            inputs = Variable(images)
-            targets = Variable(labels).long()
-            outputs = model(inputs)
+        #     inputs = Variable(images)
+        #     targets = Variable(labels).long()
+        #     outputs = model(inputs)
     
-            optimizer.zero_grad()
-            loss = criterion(outputs, targets[:, 0])
-            loss.backward()
-            optimizer.step()
-            iteration = iteration + 1
-            print('Epoch {} [{}/{}] Train_loss:{}'.format(epoch, step, len(loader_train), loss.data[0])) # loss.item() = loss.data[0]
-            writer.add_scalar('loss/train_loss', loss.data[0], iteration)
-        torch.save(model.state_dict(), '{}_{}.pth'.format(os.path.join("/home/jjin/adl/myImplementation/datasets/save","model"),str(epoch)))     
-        
+        #     optimizer.zero_grad()
+        #     loss = criterion(outputs, targets[:, 0])
+        #     loss.backward()
+        #     optimizer.step()
+        #     iteration = iteration + 1
+        #     pred = outputs.data.max(1)[1].cpu().numpy().flatten()
+        #     gt = labels.data.cpu().numpy().flatten()
+        #     global_accuracy, class_accuracies, prec, rec, f1, iou = evaluate_segmentation(pred, gt, NUM_CLASSES)
+        #     print('Epoch {} [{}/{}] Train_loss:{}'.format(epoch, step, len(loader_train), loss.data[0])) # loss.item() = loss.data[0]
+        # torch.save(model.state_dict(), '{}_{}.pth'.format(os.path.join("/home/jjin/adl/myImplementation/datasets/save","model"),str(epoch)))   
+        #   
+        # model.load_state_dict(torch.load('/home/jjin/adl/myImplementation/datasets/trained_models/erfnet_pretrained.pth'))
+        model = load_my_state_dict(model, torch.load(weightspath))
         model.eval()
         with torch.no_grad():
             for step_val, (images_val, labels_val) in enumerate(loader_val):
@@ -109,24 +148,18 @@ def main():
                 images_val = images_val.cuda()
                 labels_val = labels_val.cuda()
 
-                inputs_val = Variable(images_val)    #volatile flag makes it free backward or outputs for eval
+                inputs_val = Variable(images_val)   
                 targets_val = Variable(labels_val).long()
                 outputs_val = model(inputs_val) 
 
                 loss_val = criterion(outputs_val, targets_val[:, 0])
               #  time_val.append(time.time() - start_time)
             
-                pred = outputs_val.data.max(1)[1].cpu().numpy()
-                gt = labels_val.data.cpu().numpy()
+                pred = outputs_val.data.max(1)[1].cpu().numpy().flatten()
+                gt = labels_val.data.cpu().numpy().flatten()
+                global_accuracy, class_accuracies, prec, rec, f1, iou = evaluate_segmentation(pred, gt, NUM_CLASSES)
 
-                running_metrics_val.update(gt, pred)
-                val_loss_meter.update(loss_val.item())
-
-            writer.add_scalar('loss/val_loss', val_loss_meter.avg,  iteration)
-            score, class_iou = running_metrics_val.get_scores()
-            print('Epoch {} [{}/{}] val_loss:{}'.format(epoch, step, len(loader_val), loss_val.data[0])) # loss.item() = loss.data[0]
-            print("score", score, "class_iou", class_iou)
-    writer.close()
+            print('Epoch {} [{}/{}] val_loss:{}'.format(epoch, step_val, len(loader_val), loss_val.data[0])) # loss.item() = loss.data[0]
     
 if __name__ == '__main__':
     main()
