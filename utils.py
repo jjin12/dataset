@@ -1,172 +1,76 @@
+# original implementation can be found https://github.com/GeorgeSeif/Semantic-Segmentation-Suite
+
 import numpy as np
 import re
 import functools
+from sklearn.metrics import precision_score, \
+    recall_score, confusion_matrix, classification_report, \
+accuracy_score, f1_score
 
-class AverageMeter(object):
-    """Computes and stores the average and current value"""
-    def __init__(self):
-        self.initialized = False
-        self.val = None
-        self.avg = None
-        self.sum = None
-        self.count = None
+# Compute the average segmentation accuracy across all classes
+def compute_global_accuracy(pred, label):
+    total = len(label)
+    count = 0.0
+    for i in range(total):
+        if pred[i] == label[i]:
+            count = count + 1.0
+    return float(count) / float(total)
 
-    def initialize(self, val, weight):
-        self.val = val
-        self.avg = val
-        self.sum = val * weight
-        self.count = weight
-        self.initialized = True
+# Compute the class-specific segmentation accuracy
+def compute_class_accuracies(pred, label, num_classes):
+    total = []
+    for val in range(num_classes):
+        total.append((label == val).sum())
 
-    def update(self, val, weight=1):
-        if not self.initialized:
-            self.initialize(val, weight)
+    count = [0.0] * num_classes
+    for i in range(len(label)):
+        if pred[i] == label[i]:
+            count[int(pred[i])] = count[int(pred[i])] + 1.0
+
+    # If there are no pixels from a certain class in the GT, 
+    # it returns NAN because of divide by zero
+    # Replace the nans with a 1.0.
+    accuracies = []
+    for i in range(len(total)):
+        if total[i] == 0:
+            accuracies.append(1.0)
         else:
-            self.add(val, weight)
+            accuracies.append(count[i] / total[i])
 
-    def add(self, val, weight):
-        self.val = val
-        self.sum += val * weight
-        self.count += weight
-        self.avg = self.sum / self.count
-
-    def value(self):
-        return self.val
-
-    def average(self):
-        return self.avg
+    return accuracies
 
 
-def unique(ar, return_index=False, return_inverse=False, return_counts=False):
-    ar = np.asanyarray(ar).flatten()
+def compute_mean_iou(pred, label):
 
-    optional_indices = return_index or return_inverse
-    optional_returns = optional_indices or return_counts
+    unique_labels = np.unique(label)
+    num_unique_labels = len(unique_labels)
 
-    if ar.size == 0:
-        if not optional_returns:
-            ret = ar
-        else:
-            ret = (ar,)
-            if return_index:
-                ret += (np.empty(0, np.bool),)
-            if return_inverse:
-                ret += (np.empty(0, np.bool),)
-            if return_counts:
-                ret += (np.empty(0, np.intp),)
-        return ret
-    if optional_indices:
-        perm = ar.argsort(kind='mergesort' if return_index else 'quicksort')
-        aux = ar[perm]
-    else:
-        ar.sort()
-        aux = ar
-    flag = np.concatenate(([True], aux[1:] != aux[:-1]))
+    I = np.zeros(num_unique_labels)
+    U = np.zeros(num_unique_labels)
 
-    if not optional_returns:
-        ret = aux[flag]
-    else:
-        ret = (aux[flag],)
-        if return_index:
-            ret += (perm[flag],)
-        if return_inverse:
-            iflag = np.cumsum(flag) - 1
-            inv_idx = np.empty(ar.shape, dtype=np.intp)
-            inv_idx[perm] = iflag
-            ret += (inv_idx,)
-        if return_counts:
-            idx = np.concatenate(np.nonzero(flag) + ([ar.size],))
-            ret += (np.diff(idx),)
-    return ret
+    for index, val in enumerate(unique_labels):
+        pred_i = pred == val
+        label_i = label == val
+
+        I[index] = float(np.sum(np.logical_and(label_i, pred_i)))
+        U[index] = float(np.sum(np.logical_or(label_i, pred_i)))
 
 
-def colorEncode(labelmap, colors, mode='BGR'):
-    labelmap = labelmap.astype('int')
-    labelmap_rgb = np.zeros((labelmap.shape[0], labelmap.shape[1], 3),
-                            dtype=np.uint8)
-    for label in unique(labelmap):
-        if label < 0:
-            continue
-        labelmap_rgb += (labelmap == label)[:, :, np.newaxis] * \
-            np.tile(colors[label],
-                    (labelmap.shape[0], labelmap.shape[1], 1))
-
-    if mode == 'BGR':
-        return labelmap_rgb[:, :, ::-1]
-    else:
-        return labelmap_rgb
+    mean_iou = np.mean(I / U)
+    return mean_iou
 
 
-def accuracy(preds, label):
-    valid = (label >= 0)
-    acc_sum = (valid * (preds == label)).sum()
-    valid_sum = valid.sum()
-    acc = float(acc_sum) / (valid_sum + 1e-10)
-    return acc, valid_sum
+def evaluate_segmentation(pred, label, num_classes, score_averaging="weighted"):
+    flat_pred = pred.flatten()
+    flat_label = label.flatten()
 
+    global_accuracy = compute_global_accuracy(flat_pred, flat_label)
+    class_accuracies = compute_class_accuracies(flat_pred, flat_label, num_classes)
 
-def intersectionAndUnion(imPred, imLab, numClass):
-    imPred = np.asarray(imPred).copy()
-    imLab = np.asarray(imLab).copy()
+    prec = precision_score(flat_pred, flat_label, average=score_averaging)
+    rec = recall_score(flat_pred, flat_label, average=score_averaging)
+    f1 = f1_score(flat_pred, flat_label, average=score_averaging)
 
-    imPred += 1
-    imLab += 1
-    # Remove classes from unlabeled pixels in gt image.
-    # We should not penalize detections in unlabeled portions of the image.
-    imPred = imPred * (imLab > 0)
+    iou = compute_mean_iou(flat_pred, flat_label)
 
-    # Compute area intersection:
-    intersection = imPred * (imPred == imLab)
-    (area_intersection, _) = np.histogram(
-        intersection, bins=numClass, range=(1, numClass))
-
-    # Compute area union:
-    (area_pred, _) = np.histogram(imPred, bins=numClass, range=(1, numClass))
-    (area_lab, _) = np.histogram(imLab, bins=numClass, range=(1, numClass))
-    area_union = area_pred + area_lab - area_intersection
-
-    return (area_intersection, area_union)
-
-
-class NotSupportedCliException(Exception):
-    pass
-
-
-def process_range(xpu, inp):
-    start, end = map(int, inp)
-    if start > end:
-        end, start = start, end
-    return map(lambda x: '{}{}'.format(xpu, x), range(start, end+1))
-
-
-REGEX = [
-    (re.compile(r'^gpu(\d+)$'), lambda x: ['gpu%s' % x[0]]),
-    (re.compile(r'^(\d+)$'), lambda x: ['gpu%s' % x[0]]),
-    (re.compile(r'^gpu(\d+)-(?:gpu)?(\d+)$'),
-     functools.partial(process_range, 'gpu')),
-    (re.compile(r'^(\d+)-(\d+)$'),
-     functools.partial(process_range, 'gpu')),
-]
-
-
-def parse_devices(input_devices):
-    
-    """Parse user's devices input str to standard format.
-    e.g. [gpu0, gpu1, ...]
-
-    """
-    ret = []
-    for d in input_devices.split(','):
-        for regex, func in REGEX:
-            m = regex.match(d.lower().strip())
-            if m:
-                tmp = func(m.groups())
-                # prevent duplicate
-                for x in tmp:
-                    if x not in ret:
-                        ret.append(x)
-                break
-        else:
-            raise NotSupportedCliException(
-                    'Can not recognize device: "%s"' % d)
-    return ret
+    return global_accuracy, class_accuracies, prec, rec, f1, iou
